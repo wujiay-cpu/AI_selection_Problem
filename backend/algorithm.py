@@ -1,7 +1,11 @@
 import bisect
+from collections import OrderedDict
 import heapq
+import importlib
 import itertools
 import math
+import os
+import threading
 import time
 
 # ============================================================
@@ -9,19 +13,110 @@ import time
 #  成功：required_cover==1 的贪心路径走 C++ 实现
 #  失败：自动回退到纯 Python 实现，打印一次警告
 # ============================================================
-try:
-    from . import cover_core_ext as _cover_core
-    _CPP_AVAILABLE = True
-    print("[cover_core] C++ 加速模块加载成功")
-except ImportError:
+_cover_core = None
+_CPP_AVAILABLE = False
+_CPP_MODULE_NAME = None
+
+# 只接受真正具备加速接口的模块，避免把 backend.cover_core 包误判为扩展模块
+_REQUIRED_ACCEL_ATTRS = ("greedy_selection", "backtracking_selection", "beam_search_selection")
+
+
+def _is_valid_accel_module(mod):
+    return all(hasattr(mod, attr) for attr in _REQUIRED_ACCEL_ATTRS)
+
+
+# 优先 cover_core_ext（pybind11 直接产物），并兼容 backend/cover_core 目录下的编译产物
+for _mod_name in ("backend.cover_core_ext", "backend.cover_core.cover_core_ext", "cover_core_ext", "cover_core"):
     try:
-        import cover_core_ext as _cover_core
-        _CPP_AVAILABLE = True
-        print("[cover_core] C++ 加速模块加载成功")
-    except ImportError as e:
-        _cover_core = None
-        _CPP_AVAILABLE = False
-        print(f"[cover_core] 未找到 C++ 模块，使用纯 Python 实现 ({e})")
+        _candidate = importlib.import_module(_mod_name)
+        if _is_valid_accel_module(_candidate):
+            _cover_core = _candidate
+            _CPP_AVAILABLE = True
+            _CPP_MODULE_NAME = _mod_name
+            break
+    except ImportError:
+        continue
+
+if _CPP_AVAILABLE:
+    print(f"[cover_core] C++ 加速模块加载成功 (module={_CPP_MODULE_NAME})")
+else:
+    print("[cover_core] 未找到 C++ 模块，使用纯 Python 实现")
+
+
+def _read_env_flag(name, default=True):
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    val = str(raw).strip().lower()
+    if val in {"1", "true", "yes", "on"}:
+        return True
+    if val in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+# 可通过环境变量覆盖，默认开启
+# 示例：COVER_CPP_ULTRA_ENABLED=0 uvicorn backend.api:app ...
+_CPP_ULTRA_ENABLED = _read_env_flag("COVER_CPP_ULTRA_ENABLED", True)
+
+# 预计算缓存：复用 targets/index/candidates，减少重复构建开销
+_PRECOMP_CACHE_ENABLED = _read_env_flag("COVER_PRECOMP_CACHE_ENABLED", True)
+_PRECOMP_CACHE_SIZE = max(2, int(os.getenv("COVER_PRECOMP_CACHE_SIZE", "24")))
+_PRECOMP_CACHE_LOCK = threading.RLock()
+_TARGET_INDEX_CACHE = OrderedDict()      # key: (pool_tuple, j, s)
+_BITMASK_CANDS_CACHE = OrderedDict()     # key: (pool_tuple, k, j, s)
+_MULTI_CANDS_CACHE = OrderedDict()       # key: (pool_tuple, k, j, s)
+
+
+def _cache_get(cache_obj, key):
+    if not _PRECOMP_CACHE_ENABLED:
+        return None
+    with _PRECOMP_CACHE_LOCK:
+        val = cache_obj.get(key)
+        if val is not None:
+            cache_obj.move_to_end(key)
+        return val
+
+
+def _cache_set(cache_obj, key, value):
+    if not _PRECOMP_CACHE_ENABLED:
+        return value
+    with _PRECOMP_CACHE_LOCK:
+        cache_obj[key] = value
+        cache_obj.move_to_end(key)
+        while len(cache_obj) > _PRECOMP_CACHE_SIZE:
+            cache_obj.popitem(last=False)
+    return value
+
+
+def _get_targets_and_subset_inverted_index_cached(sample_pool, j, s):
+    key = (tuple(sample_pool), int(j), int(s))
+    cached = _cache_get(_TARGET_INDEX_CACHE, key)
+    if cached is not None:
+        return cached
+    return _cache_set(_TARGET_INDEX_CACHE, key, build_targets_and_subset_inverted_index(sample_pool, j, s))
+
+
+def _get_unique_candidates_bitmask_cached(sample_pool, k, j, s, sub_to_target_mask):
+    key = (tuple(sample_pool), int(k), int(j), int(s))
+    cached = _cache_get(_BITMASK_CANDS_CACHE, key)
+    if cached is not None:
+        return cached
+    built = build_unique_candidates_bitmask(sample_pool, k, s, sub_to_target_mask)
+    return _cache_set(_BITMASK_CANDS_CACHE, key, built)
+
+
+def _get_candidates_cover_maps_cached(sample_pool, k, j, s, all_targets):
+    key = (tuple(sample_pool), int(k), int(j), int(s))
+    cached = _cache_get(_MULTI_CANDS_CACHE, key)
+    if cached is None:
+        cached = _cache_set(
+            _MULTI_CANDS_CACHE,
+            key,
+            build_candidates_cover_maps(sample_pool, k, all_targets, s),
+        )
+    # 调用方会 pop/sort，返回一份浅拷贝防止污染缓存本体
+    return list(cached)
 
 
 def resolve_required_cover(j, s, min_cover):
@@ -87,8 +182,16 @@ def get_heuristic_greedy_selection(sample_pool, k, j, s, min_cover=1):
     #  required_cover == 1：优先走 C++ 加速路径
     # ============================================================
     if required_cover == 1:
-        if _CPP_AVAILABLE:
-            return _cover_core.greedy_selection(list(sample_pool), k, j, s)
+        if _CPP_AVAILABLE and _CPP_ULTRA_ENABLED:
+            try:
+                if hasattr(_cover_core, "greedy_fast_selection"):
+                    res, _ = _cover_core.greedy_fast_selection(list(sample_pool), k, j, s)
+                else:
+                    res, _ = _cover_core.greedy_selection(list(sample_pool), k, j, s)
+                if res:
+                    return res
+            except Exception as e:
+                print(f"C++ Greedy Error: {e}")
         # --- 纯 Python 回退 ---
         return _greedy_selection_python(sample_pool, k, j, s)
 
@@ -103,9 +206,9 @@ def get_heuristic_greedy_selection(sample_pool, k, j, s, min_cover=1):
 #  与改动前完全一致，仅在 cover_core 不可用时作为回退
 # ============================================================
 def _greedy_selection_python(sample_pool, k, j, s):
-    all_targets, sub_to_target_mask = build_targets_and_subset_inverted_index(sample_pool, j, s)
+    all_targets, sub_to_target_mask = _get_targets_and_subset_inverted_index_cached(sample_pool, j, s)
     target_count = len(all_targets)
-    candidates = build_unique_candidates_bitmask(sample_pool, k, s, sub_to_target_mask)
+    candidates = _get_unique_candidates_bitmask_cached(sample_pool, k, j, s, sub_to_target_mask)
 
     n = len(sample_pool)
     all_mask = (1 << target_count) - 1
@@ -270,8 +373,8 @@ def _greedy_selection_python(sample_pool, k, j, s):
 #  required_cover > 1 的纯 Python 贪心（不在 C++ 迁移范围内）
 # ============================================================
 def _greedy_selection_multi_cover(sample_pool, k, j, s, required_cover):
-    all_targets = list(itertools.combinations(sample_pool, j))
-    candidate_cover_maps = build_candidates_cover_maps(sample_pool, k, all_targets, s)
+    all_targets, _ = _get_targets_and_subset_inverted_index_cached(sample_pool, j, s)
+    candidate_cover_maps = _get_candidates_cover_maps_cached(sample_pool, k, j, s, all_targets)
 
     final_result = []
     covered_subsets = [set() for _ in all_targets]
@@ -365,12 +468,16 @@ def run_heuristic_greedy(m, n, k, j, s, min_cover, selected_numbers):
     return get_heuristic_greedy_selection(selected_numbers, k, j, s, min_cover)
 
 
-def run_backtracking_pruning(m, n, k, j, s, min_cover, selected_numbers, progress_callback=None):
-    greedy_result = get_heuristic_greedy_selection(selected_numbers, k, j, s, min_cover)
-    if progress_callback:
+def run_backtracking_pruning(m, n, k, j, s, min_cover, selected_numbers, progress_callback=None,
+                             greedy_result=None, emit_greedy_progress=True, time_budget_seconds=90.0):
+    if greedy_result is None:
+        greedy_result = get_heuristic_greedy_selection(selected_numbers, k, j, s, min_cover)
+    if progress_callback and emit_greedy_progress:
         progress_callback({"stage": "greedy", "best_size": len(greedy_result), "result": greedy_result})
 
-    meta = improve_with_backtracking_status(selected_numbers, k, j, s, min_cover, greedy_result, 90.0, progress_callback=progress_callback)
+    meta = improve_with_backtracking_status(
+        selected_numbers, k, j, s, min_cover, greedy_result, time_budget_seconds, progress_callback=progress_callback
+    )
     improved = meta.get("result", [])
     aborted = meta.get("aborted", False)
 
@@ -395,6 +502,9 @@ def improve_with_backtracking_status(sample_pool, k, j, s, min_cover, greedy_res
         return_meta=True,
         progress_callback=progress_callback,
     )
+    
+    # 如果回溯没有找到更好的解，并且被 abort 了，此时返回的 meta["result"] 可能是空的
+    # 我们不希望外层因为收到空 result 而崩溃。调用方应该拿到空 list，然后保留 greedy_result。
     return {
         "result": meta.get("result", []),
         "aborted": meta.get("aborted", False),
@@ -430,11 +540,28 @@ def get_backtracking_operation_limit(n, required_cover):
 def get_backtracking_selection_bitmask(sample_pool, k, j, s, max_ops, max_seconds,
                                        upper_bound_groups=None, fallback_to_greedy=True,
                                        return_meta=False, progress_callback=None):
-    all_targets, sub_to_target_mask = build_targets_and_subset_inverted_index(sample_pool, j, s)
+    # 如果 C++ 模块可用，直接委托给 C++ 执行带剪枝的 DFS 和 3-Opt
+    if _CPP_AVAILABLE and _CPP_ULTRA_ENABLED:
+        try:
+            print(f"Calling C++ backtracking with time_limit={max_seconds}s...")
+            bt_results, aborted = _cover_core.backtracking_selection(
+                list(sample_pool), k, j, s, float(max_seconds)
+            )
+            print(f"C++ backtracking finished. Result size: {len(bt_results)}, Aborted: {aborted}")
+            
+            # C++ 模块已经做过 3-Opt 兜底，直接返回结果
+            if return_meta:
+                return {"result": bt_results, "aborted": aborted}
+            return bt_results, aborted
+        except Exception as e:
+            print(f"C++ backtracking failed: {e}. Falling back to Python implementation.")
+
+    # --- 以下为原有的 Python DFS 回退逻辑 ---
+    all_targets, sub_to_target_mask = _get_targets_and_subset_inverted_index_cached(sample_pool, j, s)
     target_count = len(all_targets)
     all_mask = (1 << target_count) - 1
 
-    bitmask_candidates = build_unique_candidates_bitmask(sample_pool, k, s, sub_to_target_mask)
+    bitmask_candidates = _get_unique_candidates_bitmask_cached(sample_pool, k, j, s, sub_to_target_mask)
 
     canonical_c1 = tuple(sorted(sample_pool[:k]))
     canonical_item = None
@@ -593,7 +720,7 @@ def get_backtracking_selection_bitmask(sample_pool, k, j, s, max_ops, max_second
     if best_answer:
         if return_meta:
             return {"result": best_answer, "aborted": aborted}
-        return best_answer
+        return best_answer, aborted
 
     if aborted:
         print("回溯达到上限，停止搜索")
@@ -604,17 +731,17 @@ def get_backtracking_selection_bitmask(sample_pool, k, j, s, max_ops, max_second
             result = get_heuristic_greedy_selection(sample_pool, k, j, s, 1)
             if return_meta:
                 return {"result": result, "aborted": True}
-            return result
+            return result, True
         if return_meta:
             return {"result": [], "aborted": True}
-        return []
+        return [], True
 
     print(f"调试统计: nodes={stats['nodes']}, cut_deadline={stats['cut_deadline']}, "
           f"cut_max_ops={stats['cut_max_ops']}, cut_future={stats['cut_future']}, "
           f"cut_memo={stats['cut_memo']}, cut_lb_single={stats['cut_lb_single']}")
     if return_meta:
         return {"result": answer, "aborted": False}
-    return answer
+    return answer, False
 
 
 def get_backtracking_selection(sample_pool, k, j, s, min_cover=1, max_seconds=20.0,
@@ -630,8 +757,8 @@ def get_backtracking_selection(sample_pool, k, j, s, min_cover=1, max_seconds=20
             upper_bound_groups, fallback_to_greedy, return_meta,
             progress_callback=progress_callback)
 
-    targets = list(itertools.combinations(sample_pool, j))
-    candidates = build_candidates_cover_maps(sample_pool, k, targets, s)
+    targets, _ = _get_targets_and_subset_inverted_index_cached(sample_pool, j, s)
+    candidates = _get_candidates_cover_maps_cached(sample_pool, k, j, s, targets)
     candidates.sort(key=lambda c: sum(len(v) for v in c[1].values()), reverse=True)
 
     target_count = len(targets)
@@ -712,18 +839,83 @@ def get_backtracking_selection(sample_pool, k, j, s, min_cover=1, max_seconds=20
             print(f"找到最优解，组数: {size}")
             if return_meta:
                 return {"result": answer, "aborted": False}
-            return answer
+            return answer, False
     if return_meta:
         return {"result": answer, "aborted": aborted}
-    return answer
+    return answer, aborted
 
 
-def run_algorithm(m, n, k, j, s, min_cover, selected_numbers, progress_callback=None):
-    print(f"Running algorithm with params: m={m}, n={n}, k={k}, j={j}, s={s}, min_cover={min_cover}")
+def run_algorithm(m, n, k, j, s, min_cover, selected_numbers, optimization_level=2,
+                  progress_callback=None, initial_greedy_result=None):
+    print(f"Running algorithm with params: m={m}, n={n}, k={k}, j={j}, s={s}, min_cover={min_cover}, opt_level={optimization_level}")
 
     if len(selected_numbers) < k:
         print(f"Error: Selected numbers count ({len(selected_numbers)}) is less than k ({k})")
         return [], True
 
-    return run_backtracking_pruning(m, n, k, j, s, min_cover, selected_numbers,
-                                    progress_callback=progress_callback)
+    # 解析 required_cover
+    required_cover = resolve_required_cover(j, s, min_cover)
+    
+    if optimization_level == 1:
+        bt_time_limit = 20.0
+    elif optimization_level == 2:
+        bt_time_limit = 40.0
+    else:
+        bt_time_limit = 70.0
+
+    # 智能路由：如果是单覆盖并且 C++ 可用，我们可以使用 Beam Search 混合模式
+    if required_cover == 1 and _CPP_AVAILABLE and _CPP_ULTRA_ENABLED:
+        # 如果是极小规模，DFS 能秒出精确解，直接走原有 DFS 流程
+        if n <= 12:
+            return run_backtracking_pruning(
+                m, n, k, j, s, min_cover, selected_numbers,
+                progress_callback=progress_callback,
+                greedy_result=initial_greedy_result,
+                emit_greedy_progress=(initial_greedy_result is None),
+                time_budget_seconds=bt_time_limit,
+            )
+            
+        # 中大规模走 Beam Search
+        if optimization_level == 1:
+            beam_width = 20
+            expand_k = 5
+            beam_time_limit = 20.0
+        elif optimization_level == 2:
+            beam_width = 60
+            expand_k = 10
+            beam_time_limit = 40.0
+        else: # optimization_level >= 3
+            beam_width = 100 if n <= 18 else 500
+            expand_k = 15
+            beam_time_limit = 70.0
+
+        print(f"Active C++ Ultra Exact Solver (beam={beam_width}, expand_k={expand_k}, t={beam_time_limit}s)")
+        try:
+            # 报告初始进度
+            if progress_callback and initial_greedy_result is None:
+                # 复用外部已计算的 greedy 结果，避免重复计算
+                greedy_result = initial_greedy_result
+                if greedy_result is None:
+                    greedy_result = get_heuristic_greedy_selection(selected_numbers, k, j, s, min_cover)
+                progress_callback({"stage": "greedy", "best_size": len(greedy_result), "result": greedy_result})
+            
+            # 执行 Beam Search (已经全部被绑定到了 C++ dfs_ultra)
+            bt_results, aborted = _cover_core.beam_search_selection(
+                list(selected_numbers), k, j, s, beam_width, expand_k, beam_time_limit
+            )
+            
+            if bt_results:
+                return bt_results, aborted
+        except Exception as e:
+            print(f"C++ Engine failed: {e}. Falling back to standard backtracking.")
+            # 出错回退
+            pass
+
+    # 默认流程（包含多覆盖或者 C++ 不可用，或者 fallback）
+    return run_backtracking_pruning(
+        m, n, k, j, s, min_cover, selected_numbers,
+        progress_callback=progress_callback,
+        greedy_result=initial_greedy_result,
+        emit_greedy_progress=(initial_greedy_result is None),
+        time_budget_seconds=bt_time_limit,
+    )

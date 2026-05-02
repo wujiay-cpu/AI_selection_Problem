@@ -1,18 +1,18 @@
-import os
-import sys
+"""cover_core package init.
 
-# 将当前目录加入 sys.path 以便导入 C++ 编译生成的 .pyd / .so 文件
-current_dir = os.path.dirname(os.path.abspath(__file__))
-if current_dir not in sys.path:
-    sys.path.insert(0, current_dir)
+Avoid noisy import warnings here. The runtime import routing is handled in
+`backend.algorithm` with explicit capability checks.
+"""
 
 try:
-    from cover_core_ext import add_numbers
-except ImportError as e:
-    print(f"[Warning] Failed to import cover_core_ext. Error: {e}")
-    # 提供一个纯 Python 的 fallback，以免编译失败时整个后端挂掉
-    def add_numbers(a, b):
-        print("[Fallback] Using pure python add_numbers")
-        return a + b
+    from .cover_core_ext import greedy_selection, greedy_fast_selection, backtracking_selection, beam_search_selection
+except Exception:
+    # Keep package import silent; caller will decide fallback strategy.
+    pass
 
-__all__ = ["add_numbers"]
+__all__ = [
+    "greedy_selection",
+    "greedy_fast_selection",
+    "backtracking_selection",
+    "beam_search_selection",
+]

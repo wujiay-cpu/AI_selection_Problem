@@ -94,6 +94,7 @@ export default function App() {
   const [j, setJ] = useState('');
   const [s, setS] = useState('');
   const [minCover, setMinCover] = useState('');
+  const [optimizationLevel, setOptimizationLevel] = useState<number>(2);
   const [selectionMode, setSelectionMode] = useState<'random' | 'manual'>('random');
   const [manualInput, setManualInput] = useState('');
 
@@ -206,7 +207,11 @@ export default function App() {
           samples.push(pool.splice(idx, 1)[0]);
         }
       } else {
-        samples = [...new Set(manualInput.split(/[\s,]+/).map(x => parseInt(x, 10)).filter(x => !Number.isNaN(x)))].sort((a, b) => a - b);
+        const parsed = manualInput
+          .split(/[\s,]+/)
+          .map((x) => Number.parseInt(x, 10))
+          .filter((x): x is number => Number.isFinite(x));
+        samples = Array.from(new Set<number>(parsed)).sort((a, b) => a - b);
         if (samples.length !== N) throw new Error(`Need exactly ${N} unique numbers`);
       }
       samples = [...new Set(samples)].sort((a, b) => a - b);
@@ -219,7 +224,18 @@ export default function App() {
         const btResp = await fetch('http://127.0.0.1:8000/api/compute', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ m: M, n: N, k: K, j: J, s: S, min_cover: minCoverValue, selected_numbers: samples, algorithm: 'backtracking_pruning', save: false }),
+          body: JSON.stringify({
+            m: M,
+            n: N,
+            k: K,
+            j: J,
+            s: S,
+            min_cover: minCoverValue,
+            selected_numbers: samples,
+            algorithm: 'backtracking_pruning',
+            optimization_level: optimizationLevel,
+            save: false,
+          }),
           signal: controller.signal,
         });
 
@@ -401,6 +417,7 @@ export default function App() {
     setStatus('idle');
     setSelectedIndex(-1);
     setIsRunning(false);
+    setOptimizationLevel(2);
     setM(''); setN(''); setK(''); setJ(''); setS(''); setMinCover(''); setManualInput('');
   };
 
@@ -497,6 +514,38 @@ export default function App() {
                         disabled={isMinCoverLocked} 
                         className={`input-field w-full text-base px-2 py-1 ${isMinCoverLocked ? 'opacity-50 cursor-not-allowed' : ''}`} 
                       />
+                    </div>
+                    <div className="space-y-1 col-span-2">
+                      <label className="text-xs font-bold text-text-secondary">Optimization Level</label>
+                      <div className="flex gap-3 text-xs">
+                        <label className="flex items-center space-x-1 cursor-pointer">
+                          <input
+                            type="radio"
+                            name="opt-level"
+                            checked={optimizationLevel === 1}
+                            onChange={() => setOptimizationLevel(1)}
+                          />
+                          <span>Fast</span>
+                        </label>
+                        <label className="flex items-center space-x-1 cursor-pointer">
+                          <input
+                            type="radio"
+                            name="opt-level"
+                            checked={optimizationLevel === 2}
+                            onChange={() => setOptimizationLevel(2)}
+                          />
+                          <span>Standard</span>
+                        </label>
+                        <label className="flex items-center space-x-1 cursor-pointer">
+                          <input
+                            type="radio"
+                            name="opt-level"
+                            checked={optimizationLevel === 3}
+                            onChange={() => setOptimizationLevel(3)}
+                          />
+                          <span>Deep</span>
+                        </label>
+                      </div>
                     </div>
                   </div>
                 </section>

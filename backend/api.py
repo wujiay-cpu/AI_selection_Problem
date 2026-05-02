@@ -9,8 +9,14 @@ from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from .algorithm import run_algorithm, run_heuristic_greedy
-from .storage import save_result, list_results, load_result, delete_result
+try:
+    # package mode: uvicorn backend.api:app
+    from .algorithm import run_algorithm, run_heuristic_greedy
+    from .storage import save_result, list_results, load_result, delete_result
+except ImportError:
+    # script mode: uvicorn api:app (cwd=backend)
+    from algorithm import run_algorithm, run_heuristic_greedy
+    from storage import save_result, list_results, load_result, delete_result
 
 app = FastAPI(title="Selection System API")
 
@@ -31,6 +37,7 @@ class ComputeRequest(BaseModel):
     min_cover: Union[int, str] = 1
     selected_numbers: List[int] = Field(min_length=1)
     algorithm: Literal["backtracking_pruning", "heuristic_greedy"] = "backtracking_pruning"
+    optimization_level: Optional[int] = Field(default=2, description="1: Fast (beam=20), 2: Standard (beam=60), 3: Deep (beam=100+)")
     save: bool = False
 
 class StoreRequest(BaseModel):
@@ -63,10 +70,18 @@ async def stream_backtracking_results(req: ComputeRequest):
 
             # unpack the result correctly
             result, aborted = run_algorithm(
-                req.m, req.n, req.k, req.j, req.s, req.min_cover, req.selected_numbers, progress_callback=progress_callback
+                req.m, req.n, req.k, req.j, req.s, req.min_cover, req.selected_numbers, 
+                optimization_level=req.optimization_level,
+                progress_callback=progress_callback,
+                initial_greedy_result=greedy_combinations
             )
-            q.put(json.dumps({"stage": "completed", "result": result, "aborted": aborted}))
+            # Ensure the output string is sent correctly even if large
+            completed_data = json.dumps({"stage": "completed", "result": result, "aborted": aborted})
+            q.put(completed_data)
         except Exception as e:
+            import traceback
+            traceback.print_exc()
+            print(f"Exception in stream_backtracking_results: {e}")
             q.put(json.dumps({"stage": "error", "detail": str(e)}))
         finally:
             q.put(None) # End of stream signal
@@ -78,7 +93,14 @@ async def stream_backtracking_results(req: ComputeRequest):
         item = await asyncio.to_thread(q.get)
         if item is None:
             break
+        # Manually ensure that very long strings are chunked or sent properly by Uvicorn.
+        # Server-Sent Events require data lines.
+        # If the item is very large, yielding a huge string in one go might cause issues.
+        # But SSE allows multi-line data by prefixing each line with 'data: '
+        # However, JSON string is single line. Let's just yield it.
         yield f"data: {item}\n\n"
+        # Small sleep to allow network buffer to flush for huge payloads
+        await asyncio.sleep(0.01)
 
 @app.post("/api/compute")
 async def compute(req: ComputeRequest):

@@ -16,6 +16,7 @@ if(MSVC)
     /GL          # 全程序优化
     /arch:AVX2   # 启用 AVX2（含 BMI1，支持 _blsi_u64 等指令）
     /W3
+    /utf-8       # 修复中文注释导致的 C2059 语法错误
   )
   add_link_options(/LTCG)  # 链接时代码生成
 else()
