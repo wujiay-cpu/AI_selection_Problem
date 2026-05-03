@@ -5,10 +5,23 @@ import pybind11
 
 import os
 
+use_asan = os.environ.get("COVER_ASAN", "0") == "1"
+
 if os.name == "nt":
-    extra_args = ["/O2", "/std:c++17", "/utf-8"]
+    if use_asan:
+        # ASan debug-oriented build on MSVC.
+        extra_args = ["/Od", "/Zi", "/std:c++17", "/utf-8", "/fsanitize=address", "/GL-"]
+        extra_link_args = ["/fsanitize=address"]
+    else:
+        extra_args = ["/O2", "/std:c++17", "/utf-8"]
+        extra_link_args = []
 else:
-    extra_args = ["-O3", "-Wall", "-shared", "-std=c++17", "-fPIC"]
+    if use_asan:
+        extra_args = ["-O1", "-g", "-Wall", "-shared", "-std=c++17", "-fPIC", "-fsanitize=address"]
+        extra_link_args = ["-fsanitize=address"]
+    else:
+        extra_args = ["-O3", "-Wall", "-shared", "-std=c++17", "-fPIC"]
+        extra_link_args = []
 
 ext_modules = [
     Extension(
@@ -17,6 +30,7 @@ ext_modules = [
         include_dirs=[pybind11.get_include()],
         language="c++",
         extra_compile_args=extra_args,
+        extra_link_args=extra_link_args,
     ),
 ]
 

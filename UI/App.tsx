@@ -94,7 +94,6 @@ export default function App() {
   const [j, setJ] = useState('');
   const [s, setS] = useState('');
   const [minCover, setMinCover] = useState('');
-  const [optimizationLevel, setOptimizationLevel] = useState<number>(2);
   const [selectionMode, setSelectionMode] = useState<'random' | 'manual'>('random');
   const [manualInput, setManualInput] = useState('');
 
@@ -233,7 +232,6 @@ export default function App() {
             min_cover: minCoverValue,
             selected_numbers: samples,
             algorithm: 'backtracking_pruning',
-            optimization_level: optimizationLevel,
             save: false,
           }),
           signal: controller.signal,
@@ -251,8 +249,8 @@ export default function App() {
         let greedyDuration = 0;
         let lastResultCount = Infinity;
 
-        // Client-side timeout fallback: if 'completed' is not received within 90s, force cancel the stream
-        const CLIENT_TIMEOUT_MS = 90 * 1000;
+        // Client-side timeout fallback: allow long-running large cases.
+        const CLIENT_TIMEOUT_MS = 400 * 1000;
         let clientTimedOut = false;
         const clientTimeoutId = setTimeout(() => {
           clientTimedOut = true;
@@ -286,7 +284,7 @@ export default function App() {
                   setExecutionTime(greedyDuration);
                 } else if (data.stage === 'backtracking_started') {
                   const targetCount = data.greedy_size ?? lastResultCount;
-                  addLog(`Backtracking search started (up to 90s). Searching for a result below ${targetCount} groups...`);
+                  addLog(`Backtracking search started (up to 120s). Searching for a result below ${targetCount} groups...`);
                 } else if (data.stage === 'backtracking' && data.result) {
                   const btResults: number[][] = data.result;
                   const alg = 'backtracking_pruning';
@@ -333,8 +331,8 @@ export default function App() {
                     setExecutionTime(btDuration);
                   }
 
-                  // Stricter timeout detection: backend returns aborted OR running time > 89s with no improvement
-                  const isTimedOut = aborted === true || (btDuration > 89.0 && finalResult.length >= greedyResults.length);
+                  // Stricter timeout detection: backend returns aborted OR running time > 119s with no improvement
+                  const isTimedOut = aborted === true || (btDuration > 119.0 && finalResult.length >= greedyResults.length);
 
                   if (isTimedOut) {
                     if (finalResult.length < greedyResults.length) {
@@ -514,38 +512,6 @@ export default function App() {
                         disabled={isMinCoverLocked} 
                         className={`input-field w-full text-base px-2 py-1 ${isMinCoverLocked ? 'opacity-50 cursor-not-allowed' : ''}`} 
                       />
-                    </div>
-                    <div className="space-y-1 col-span-2">
-                      <label className="text-xs font-bold text-text-secondary">Optimization Level</label>
-                      <div className="flex gap-3 text-xs">
-                        <label className="flex items-center space-x-1 cursor-pointer">
-                          <input
-                            type="radio"
-                            name="opt-level"
-                            checked={optimizationLevel === 1}
-                            onChange={() => setOptimizationLevel(1)}
-                          />
-                          <span>Fast</span>
-                        </label>
-                        <label className="flex items-center space-x-1 cursor-pointer">
-                          <input
-                            type="radio"
-                            name="opt-level"
-                            checked={optimizationLevel === 2}
-                            onChange={() => setOptimizationLevel(2)}
-                          />
-                          <span>Standard</span>
-                        </label>
-                        <label className="flex items-center space-x-1 cursor-pointer">
-                          <input
-                            type="radio"
-                            name="opt-level"
-                            checked={optimizationLevel === 3}
-                            onChange={() => setOptimizationLevel(3)}
-                          />
-                          <span>Deep</span>
-                        </label>
-                      </div>
                     </div>
                   </div>
                 </section>

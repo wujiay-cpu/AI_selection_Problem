@@ -37,7 +37,7 @@ class ComputeRequest(BaseModel):
     min_cover: Union[int, str] = 1
     selected_numbers: List[int] = Field(min_length=1)
     algorithm: Literal["backtracking_pruning", "heuristic_greedy"] = "backtracking_pruning"
-    optimization_level: Optional[int] = Field(default=2, description="1: Fast (beam=20), 2: Standard (beam=60), 3: Deep (beam=100+)")
+    optimization_level: Optional[int] = Field(default=2, description="reserved for compatibility; server currently uses unified standard search parameters with 120s budget")
     save: bool = False
 
 class StoreRequest(BaseModel):

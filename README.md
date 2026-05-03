@@ -1,114 +1,144 @@
-# Selection System
+# Selection System：覆盖问题求解器
 
-一个用于求解与展示集合覆盖问题（Set Cover）的全栈项目。
+小组作业项目：求解 covering design 问题。给定 `n` 个元素，从中选出若干个 `k`-子集，使得每个 `j`-子集都至少与某个选中 `k`-子集有 `>= s` 个公共元素。
 
-- 前端：React + Vite
-- 后端：FastAPI
-- 加速：pybind11 + C++（可选）
-
-## 1. 项目结构
+## 项目结构
 
 ```text
 Selection_system/
-├─ UI/                       # 前端源码
-├─ backend/                  # 后端源码
-│  ├─ api.py                 # FastAPI 入口
-│  ├─ algorithm.py           # 算法调度与回退逻辑
-│  └─ cover_core/            # C++ 扩展源码（可选编译）
-├─ index.html
-├─ vite.config.ts
-├─ requirements.txt
+├─ UI/                              # 前端（React + TypeScript + Vite）
+├─ backend/
+│  ├─ cover_core/                   # C++ 算法核心（pybind11 扩展）
+│  │  ├─ src/
+│  │  │  ├─ bindings.cpp
+│  │  │  ├─ bitmask.h
+│  │  │  ├─ core.cpp
+│  │  │  ├─ core.h
+│  │  │  ├─ dfs.h
+│  │  │  └─ greedy.h
+│  │  ├─ CMakeLists.txt
+│  │  ├─ __init__.py
+│  │  └─ setup.py
+│  ├─ tests/
+│  │  ├─ benchmark_cases.py
+│  │  └─ final_baseline_runner_14.py
+│  ├─ results/
+│  │  ├─ final_baseline_v2.json
+│  │  └─ DELIVERY_NOTES.md
+│  ├─ algorithm.py
+│  ├─ api.py
+│  ├─ storage.py
+│  ├─ setup.py
+│  └─ BUILD.md
+├─ TEST_REPORT.md
 └─ README.md
 ```
 
-## 2. 环境要求
+## 核心算法
 
-- Node.js 16+
-- Python 3.9+
-- Windows 下建议安装 Visual Studio 2022（用于 C++ 扩展编译）
+求解流程：
 
-## 3. 安装依赖
+1. 建模：枚举 `candidates`（`k`-子集）与 `targets`（`j`-子集），构建覆盖关系。
+2. 贪心 seed：快速构造可行解作为初始上界。
+3. DFS：分支定界搜索，根并行加速。
+4. ILS：在预算内做扰动与局部改进。
 
-在项目根目录执行：
+关键技术：
+
+- bitmask 与分块掩码加速集合运算
+- 多重下界剪枝
+- 多线程根并行 DFS
+- 大规模 case 的时间预算自适应
+
+## 编译与运行
+
+### 环境要求
+
+- Python 3.13
+- Node.js 18+
+- Windows: Visual Studio 2022 (MSVC)
+
+### 安装依赖
 
 ```bash
 npm install
 pip install -r requirements.txt
 ```
 
-如果 `requirements.txt` 未包含完整后端依赖，可补充：
-
-```bash
-pip install fastapi uvicorn pybind11
-```
-
-## 4. （可选）编译 C++ 加速模块
+### 编译 C++ 扩展
 
 ```bash
 cd backend/cover_core
-python setup.py build_ext --inplace
+python setup.py build_ext --inplace --force
 ```
 
-编译成功后会生成 `cover_core_ext*.pyd`（Windows）或 `.so`（Linux/Mac）。
-
-## 5. 启动项目
-
-建议开两个终端。
-
-### 终端 A：启动后端（推荐在项目根目录）
-
-```bash
-uvicorn backend.api:app --host 0.0.0.0 --port 8000
-```
-
-也支持在 `backend` 目录启动：
+### 启动后端 API
 
 ```bash
 cd backend
-set PYTHONPATH=.
-uvicorn api:app --host 0.0.0.0 --port 8000
+python api.py
 ```
 
-### 终端 B：启动前端
+### 启动前端
 
 ```bash
 npm run dev
 ```
 
-默认访问地址：
+## 测试
 
-- 前端：`http://localhost:3000`
-- 后端：`http://127.0.0.1:8000`
-
-## 6. 常见问题
-
-### 6.1 `WinError 10048`（端口被占用）
-
-说明 8000 端口已有服务在运行，不要重复启动。或先杀进程再启动：
-
-```powershell
-Get-NetTCPConnection -LocalPort 8000 -State Listen |
-  Select-Object -ExpandProperty OwningProcess |
-  ForEach-Object { Stop-Process -Id $_ -Force }
+```bash
+python backend/tests/final_baseline_runner_14.py
 ```
 
-### 6.2 `ModuleNotFoundError: No module named 'backend'`
+测试结果输出到 `backend/results/final_baseline_v2.json`，详细分析见 `TEST_REPORT.md`。
 
-通常是启动目录和启动命令不匹配：
+## 测试结果摘要
 
-- 在项目根目录用：`uvicorn backend.api:app ...`
-- 在 `backend` 目录用：`uvicorn api:app ...`
+- `verified=True`: `14/14`
+- `diff<=10`: `10/14`
+- 总耗时：`914.1s`
 
-### 6.3 前端报 `ERR_CONNECTION_RESET / Failed to fetch`
+## 算法选择
 
-通常是后端进程异常退出导致。先确认后端是否仍在监听 8000，再查看后端日志。
+后端固定使用 `run_backtracking_pruning` 算法（先贪心后回溯精确搜索）。前端不暴露算法选择，所有规模统一走该算法路径，与脚本基线测试一致。
 
-## 7. 上传 GitHub 建议
+## 前端使用说明
 
-提交前建议确保以下内容不进入仓库：
+### 复现脚本基线
 
-- `node_modules/`
-- `build/`、`__pycache__/`
-- `*.pyd`、`*.obj`、`*.lib`、`*.exp` 等编译产物
+1. 选择手动模式。
+2. `selected_numbers` 输入 `1, 2, ..., n`（与 case 的 `n` 对应）。
+3. `k`、`m(=j)`、`t(=s)` 与测试表一致。
+4. 提交后等待返回。
 
-本仓库已在 `.gitignore` 中配置上述规则。
+### 关于随机模式
+
+随机模式从 `1..m` 中抽取 `n` 个元素作为 pool。由于算法只关心集合关系，不依赖元素数值本身，结果应与基线一致；当 pool 大小或参数不同，结果不同属于正常现象。
+
+### 运行时间预期
+
+- case 01-10、12：约 30s 内完成
+- case 11/13/14：约 100-400s（已知限制，build 阶段不可中断）
+- case 15（`n=28`）：不支持
+
+前端客户端超时已设为 400 秒，可容纳大 case。
+
+## 已知限制
+
+### 时间
+
+默认 `time_limit=30s`，但大规模实例存在超时现象：
+
+- case 11：约 `100-400s`（存在随机波动）
+- case 13：约 `100s`
+- case 14：约 `150-340s`
+- case 15（`n=28`）：未支持
+
+### 解质量
+
+在 `30s` 时限下，以下 case 误差较大：
+
+- case 02：`+41`
+- case 05：`+53`
+- case 13：`+13`

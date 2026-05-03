@@ -856,62 +856,11 @@ def run_algorithm(m, n, k, j, s, min_cover, selected_numbers, optimization_level
     # 解析 required_cover
     required_cover = resolve_required_cover(j, s, min_cover)
     
-    if optimization_level == 1:
-        bt_time_limit = 20.0
-    elif optimization_level == 2:
-        bt_time_limit = 40.0
-    else:
-        bt_time_limit = 70.0
+    # 统一时间预算：与脚本基线对齐为 30s
+    bt_time_limit = 30.0
 
-    # 智能路由：如果是单覆盖并且 C++ 可用，我们可以使用 Beam Search 混合模式
-    if required_cover == 1 and _CPP_AVAILABLE and _CPP_ULTRA_ENABLED:
-        # 如果是极小规模，DFS 能秒出精确解，直接走原有 DFS 流程
-        if n <= 12:
-            return run_backtracking_pruning(
-                m, n, k, j, s, min_cover, selected_numbers,
-                progress_callback=progress_callback,
-                greedy_result=initial_greedy_result,
-                emit_greedy_progress=(initial_greedy_result is None),
-                time_budget_seconds=bt_time_limit,
-            )
-            
-        # 中大规模走 Beam Search
-        if optimization_level == 1:
-            beam_width = 20
-            expand_k = 5
-            beam_time_limit = 20.0
-        elif optimization_level == 2:
-            beam_width = 60
-            expand_k = 10
-            beam_time_limit = 40.0
-        else: # optimization_level >= 3
-            beam_width = 100 if n <= 18 else 500
-            expand_k = 15
-            beam_time_limit = 70.0
-
-        print(f"Active C++ Ultra Exact Solver (beam={beam_width}, expand_k={expand_k}, t={beam_time_limit}s)")
-        try:
-            # 报告初始进度
-            if progress_callback and initial_greedy_result is None:
-                # 复用外部已计算的 greedy 结果，避免重复计算
-                greedy_result = initial_greedy_result
-                if greedy_result is None:
-                    greedy_result = get_heuristic_greedy_selection(selected_numbers, k, j, s, min_cover)
-                progress_callback({"stage": "greedy", "best_size": len(greedy_result), "result": greedy_result})
-            
-            # 执行 Beam Search (已经全部被绑定到了 C++ dfs_ultra)
-            bt_results, aborted = _cover_core.beam_search_selection(
-                list(selected_numbers), k, j, s, beam_width, expand_k, beam_time_limit
-            )
-            
-            if bt_results:
-                return bt_results, aborted
-        except Exception as e:
-            print(f"C++ Engine failed: {e}. Falling back to standard backtracking.")
-            # 出错回退
-            pass
-
-    # 默认流程（包含多覆盖或者 C++ 不可用，或者 fallback）
+    # 统一走 run_backtracking_pruning，与脚本基线对齐。
+    # 注：原 n>12 时的 Beam Search 路由已禁用，避免与脚本基线算法不一致。
     return run_backtracking_pruning(
         m, n, k, j, s, min_cover, selected_numbers,
         progress_callback=progress_callback,
