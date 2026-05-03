@@ -107,6 +107,8 @@ export default function App() {
   const [logs, setLogs] = useState<string[]>([]);
   const [currentSelectedNumbers, setCurrentSelectedNumbers] = useState<number[]>([]);
   const [currentAlgorithm, setCurrentAlgorithm] = useState('backtracking_pruning');
+  const [progressPhase, setProgressPhase] = useState<'idle' | 'phase1' | 'phase2' | 'completed'>('idle');
+  const [progressValue, setProgressValue] = useState(0);
 
   // History
   const [historyFiles, setHistoryFiles] = useState<string[]>([]);
@@ -137,6 +139,14 @@ export default function App() {
   }, [logs]);
 
   const isMinCoverLocked = s !== '' && j !== '' && s === j;
+  const progressStageText =
+    progressPhase === 'phase1'
+      ? 'Stage 1/2: Greedy Seed (Preview)'
+      : progressPhase === 'phase2'
+      ? 'Stage 2/2: Backtracking Optimization (Waiting for Final Result)'
+      : progressPhase === 'completed'
+      ? 'Completed: Final Result'
+      : 'Waiting to Start';
 
   useEffect(() => {
     if (isMinCoverLocked) {
@@ -145,6 +155,17 @@ export default function App() {
       setMinCover('');
     }
   }, [isMinCoverLocked, minCover]);
+
+  useEffect(() => {
+    if (progressPhase !== 'phase1' && progressPhase !== 'phase2') return;
+    const timer = window.setInterval(() => {
+      setProgressValue((v) => {
+        if (progressPhase === 'phase1') return Math.min(30, v + 0.6);
+        return Math.min(95, v + 0.4);
+      });
+    }, 400);
+    return () => window.clearInterval(timer);
+  }, [progressPhase]);
 
   const addLog = (msg: string) => setLogs(prev => [...prev, msg]);
 
@@ -185,6 +206,8 @@ export default function App() {
     setLogs(['Calculating... please wait.']);
     setSelectedIndex(-1);
     setIsOptimal(null);
+    setProgressPhase('phase1');
+    setProgressValue(6);
 
     try {
       const M = parseInt(m, 10);
@@ -277,6 +300,8 @@ export default function App() {
                   greedyResults = data.result || [];
                   greedyDuration = (performance.now() - btStart) / 1000;
                   lastResultCount = greedyResults.length;
+                  setProgressPhase('phase2');
+                  setProgressValue(35);
                   setResultBlock(greedyDuration, M, N, K, J, S, minCoverValue, 'heuristic_greedy (preview)', samples, greedyResults);
                   setCurrentResults(greedyResults);
                   setCurrentSelectedNumbers(samples);
@@ -284,8 +309,11 @@ export default function App() {
                   setExecutionTime(greedyDuration);
                 } else if (data.stage === 'backtracking_started') {
                   const targetCount = data.greedy_size ?? lastResultCount;
+                  setProgressPhase('phase2');
                   addLog(`Backtracking search started (up to 120s). Searching for a result below ${targetCount} groups...`);
                 } else if (data.stage === 'backtracking' && data.result) {
+                  setProgressPhase('phase2');
+                  setProgressValue((v) => Math.max(v, Math.min(95, 35 + btDuration * 1.8)));
                   const btResults: number[][] = data.result;
                   const alg = 'backtracking_pruning';
                   // Build log with improvement notice at the top so user sees it immediately
@@ -311,6 +339,8 @@ export default function App() {
                   const finalResult: number[][] = data.result || [];
                   const aborted = data.aborted;
                   const btDuration = (performance.now() - btStart) / 1000;
+                  setProgressPhase('completed');
+                  setProgressValue(100);
 
                   if (finalResult.length > 0 && finalResult.length < lastResultCount) {
                     const alg = 'backtracking_pruning';
@@ -413,6 +443,8 @@ export default function App() {
     setCurrentResults([]);
     setLogs([]);
     setStatus('idle');
+    setProgressPhase('idle');
+    setProgressValue(0);
     setSelectedIndex(-1);
     setIsRunning(false);
     setOptimizationLevel(2);
@@ -441,6 +473,49 @@ export default function App() {
 
       setHistoryFiles(files);
     } catch (e) { console.error(e); }
+  };
+
+  const printHistoryContent = () => {
+    if (!historyRef.current) {
+      alert('No history content to print.');
+      return;
+    }
+
+    const printWindow = window.open('', '_blank', 'width=1000,height=800');
+    if (!printWindow) {
+      alert('Unable to open print window. Please check popup settings.');
+      return;
+    }
+
+    const styleTags = Array.from(
+      document.querySelectorAll('style, link[rel="stylesheet"]')
+    )
+      .map((el) => el.outerHTML)
+      .join('\n');
+
+    printWindow.document.write(`
+      <!doctype html>
+      <html>
+        <head>
+          <meta charset="utf-8" />
+          <title>History Content Viewer</title>
+          ${styleTags}
+          <style>
+            body { margin: 0; padding: 20px; background: #fff; color: #111; }
+            .print-wrap { max-width: 1000px; margin: 0 auto; }
+          </style>
+        </head>
+        <body>
+          <div class="print-wrap">${historyRef.current.innerHTML}</div>
+        </body>
+      </html>
+    `);
+    printWindow.document.close();
+    printWindow.focus();
+    setTimeout(() => {
+      printWindow.print();
+      printWindow.close();
+    }, 200);
   };
 
   const deleteSelectedHistory = async () => {
@@ -549,32 +624,36 @@ export default function App() {
                   <button onClick={clearAll} className="btn-base bg-btn-bg hover:bg-btn-hover h-12 text-sm font-bold uppercase tracking-wider">Clear</button>
                   <button onClick={saveToHistory} className="btn-base bg-btn-bg hover:bg-btn-hover h-12 text-sm font-bold uppercase tracking-wider">Store</button>
                   <button onClick={() => window.print()} className="btn-base bg-btn-bg hover:bg-btn-hover h-12 text-sm font-bold uppercase tracking-wider">Print</button>
+                  <button onClick={() => setActiveTab('history')} className="btn-base bg-btn-bg hover:bg-btn-hover h-12 text-sm font-bold uppercase tracking-wider col-span-2">Next</button>
                 </section>
               </div>
 
               {/* Right Panel: Output with Scroll */}
               <div className="col-span-8 flex flex-col min-h-0 h-full">
                 <section className="card flex-grow flex flex-col min-h-0">
-                  <div className="flex items-center justify-between p-3 border-b border-border bg-bg-accent shrink-0">
-                    <div className="flex items-center space-x-3">
-                      <span className="text-xs font-bold tracking-widest text-text-secondary uppercase">Results Output</span>
-                      <div className="flex items-center space-x-2 px-2 py-0.5 rounded bg-bg-primary border border-border-input">
-                        <div className={`w-2.5 h-2.5 rounded-full ${
-                          status === 'running' ? 'bg-blue-500 animate-pulse shadow-[0_0_8px_rgba(59,130,246,0.8)]' : 
-                          (status === 'success' && isOptimal === true) ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.8)]' : 
-                          (status === 'warning' || isOptimal === false) ? 'bg-yellow-500 shadow-[0_0_8px_rgba(234,179,8,0.8)]' :
-                          status === 'error' ? 'bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.8)]' :
-                          'bg-text-secondary'
-                        }`} />
-                        <span className="text-xs font-mono uppercase opacity-70">
-                          {status === 'running' ? 'Running' :
-                           (status === 'success' && isOptimal === true) ? 'Improved / Optimal' :
-                           (status === 'warning' || isOptimal === false) ? 'No Improvement (Timeout)' :
-                           status}
-                        </span>
+                  <div className="p-3 border-b border-border bg-bg-accent shrink-0">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex items-center space-x-3 min-w-[220px]">
+                        <span className="text-xs font-bold tracking-widest text-text-secondary uppercase">Results Output</span>
+                        <div className="flex items-center space-x-2 px-2 py-0.5 rounded bg-bg-primary border border-border-input">
+                          <div className={`w-2.5 h-2.5 rounded-full ${
+                            status === 'running' ? 'bg-blue-500 animate-pulse shadow-[0_0_8px_rgba(59,130,246,0.8)]' : 
+                            (status === 'success' && isOptimal === true) ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.8)]' : 
+                            (status === 'warning' || isOptimal === false) ? 'bg-yellow-500 shadow-[0_0_8px_rgba(234,179,8,0.8)]' :
+                            status === 'error' ? 'bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.8)]' :
+                            'bg-text-secondary'
+                          }`} />
+                          <span className="text-xs font-mono uppercase opacity-70">{status === 'running' ? 'Running' : (status === 'success' && isOptimal === true) ? 'Improved / Optimal' : (status === 'warning' || isOptimal === false) ? 'No Improvement (Timeout)' : status}</span>
+                        </div>
                       </div>
-                    </div>
-                    <div className="flex gap-2">
+                      <div className="flex-1 min-w-[280px]">
+                        <div className="h-2 w-full rounded bg-bg-primary border border-border-input overflow-hidden">
+                          <div className={`h-full transition-all duration-500 ${status === 'running' ? 'bg-blue-500' : progressPhase === 'completed' ? 'bg-emerald-500' : 'bg-yellow-500'}`} style={{ width: `${progressValue}%` }} />
+                        </div>
+                        <p className="text-[11px] mt-1 text-text-secondary">{progressStageText}</p>
+                        {status === 'running' && <p className="text-[11px] text-blue-400">The current output is a greedy preview, not the final result. Please wait for backtracking completion.</p>}
+                      </div>
+                      <div className="flex gap-2">
                       <button 
                         onClick={() => navigator.clipboard.writeText(logs.join('\n'))}
                         disabled={logs.length === 0}
@@ -591,6 +670,7 @@ export default function App() {
                       </button>
                     </div>
                   </div>
+                </div>
                   
                   <div
                       ref={terminalRef} 
@@ -665,6 +745,18 @@ export default function App() {
                     <div className="p-3 bg-bg-accent border-b border-border flex items-center justify-between shrink-0">
                        <span className="text-xs font-bold tracking-widest uppercase">Content Viewer</span>
                        <div className="flex gap-2">
+                          <button
+                            onClick={() => setActiveTab('generator')}
+                            className="text-xs font-bold px-2 py-1 bg-sky-200 text-sky-900 border border-sky-300 rounded hover:bg-sky-300 uppercase"
+                          >
+                            Back
+                          </button>
+                          <button
+                            onClick={printHistoryContent}
+                            className="text-xs font-bold px-2 py-1 bg-border rounded hover:bg-border-input uppercase"
+                          >
+                            Print
+                          </button>
                           <button 
                             onClick={() => setHistorySelectedIndex(p => (p + 1) % (selectedHistoryData?.combinations.length || 1))} 
                             className="text-xs font-bold px-2 py-1 bg-border rounded hover:bg-border-input uppercase"
