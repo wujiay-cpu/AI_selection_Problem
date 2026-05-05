@@ -26,7 +26,7 @@ else:
 ext_modules = [
     Extension(
         "cover_core_ext",
-        ["src/core.cpp", "src/bindings.cpp"],
+        ["src/bindings.cpp"],
         include_dirs=[pybind11.get_include()],
         language="c++",
         extra_compile_args=extra_args,

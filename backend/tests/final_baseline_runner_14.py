@@ -6,9 +6,10 @@ from itertools import combinations
 
 import importlib
 
-ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+BACKEND_ROOT = os.path.join(PROJECT_ROOT, "backend")
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
 cc = None
 for mod_name in ("backend.cover_core.cover_core_ext", "cover_core_ext"):
@@ -94,7 +95,7 @@ def main():
             results.append(row)
             print(f"case {cid:02d}: ERROR {e}")
 
-    out_path = os.path.join(ROOT, "results", "final_baseline_v2.json")
+    out_path = os.path.join(BACKEND_ROOT, "results", "final_baseline_v2.json")
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(results, f, ensure_ascii=False, indent=2)
 

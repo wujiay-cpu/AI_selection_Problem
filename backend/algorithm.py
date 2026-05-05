@@ -512,12 +512,6 @@ def improve_with_backtracking_status(sample_pool, k, j, s, min_cover, greedy_res
     }
 
 
-def improve_with_backtracking(sample_pool, k, j, s, min_cover, greedy_result, time_budget_seconds=90.0, progress_callback=None):
-    return improve_with_backtracking_status(
-        sample_pool, k, j, s, min_cover, greedy_result, time_budget_seconds, progress_callback=progress_callback
-    ).get("result", [])
-
-
 def get_backtracking_operation_limit(n, required_cover):
     if n <= 10:
         base = 90000000
@@ -845,9 +839,9 @@ def get_backtracking_selection(sample_pool, k, j, s, min_cover=1, max_seconds=20
     return answer, aborted
 
 
-def run_algorithm(m, n, k, j, s, min_cover, selected_numbers, optimization_level=2,
+def run_algorithm(m, n, k, j, s, min_cover, selected_numbers,
                   progress_callback=None, initial_greedy_result=None):
-    print(f"Running algorithm with params: m={m}, n={n}, k={k}, j={j}, s={s}, min_cover={min_cover}, opt_level={optimization_level}")
+    print(f"Running algorithm with params: m={m}, n={n}, k={k}, j={j}, s={s}, min_cover={min_cover}")
 
     if len(selected_numbers) < k:
         print(f"Error: Selected numbers count ({len(selected_numbers)}) is less than k ({k})")

@@ -70,8 +70,7 @@ async def stream_backtracking_results(req: ComputeRequest):
 
             # unpack the result correctly
             result, aborted = run_algorithm(
-                req.m, req.n, req.k, req.j, req.s, req.min_cover, req.selected_numbers, 
-                optimization_level=req.optimization_level,
+                req.m, req.n, req.k, req.j, req.s, req.min_cover, req.selected_numbers,
                 progress_callback=progress_callback,
                 initial_greedy_result=greedy_combinations
             )
